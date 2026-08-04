@@ -122,3 +122,7 @@ bink cluster stop --remove-data
 ```bash
 source <(bink completion bash)
 ```
+
+## Documentation
+
+- [Building Custom Node Images](docs/custom-node-images.md) — How to build and test with custom or patched packages
