@@ -156,6 +156,31 @@ func (c *Client) EnableCoreDNSFallthrough(ctx context.Context) error {
 	return nil
 }
 
+// WaitForDeploymentReady polls until the named deployment has at least one
+// ready replica, or the timeout expires.
+func (c *Client) WaitForDeploymentReady(ctx context.Context, namespace, name string, timeout time.Duration) error {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("timed out waiting for deployment %s/%s to be ready", namespace, name)
+		case <-ticker.C:
+			deploy, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				continue
+			}
+			if deploy.Status.ReadyReplicas >= 1 {
+				return nil
+			}
+		}
+	}
+}
+
 // LabelNode adds the given labels to a node, overwriting any that already exist.
 func (c *Client) LabelNode(ctx context.Context, nodeName string, labels map[string]string) error {
 	patch := map[string]interface{}{

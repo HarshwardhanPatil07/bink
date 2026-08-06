@@ -153,6 +153,13 @@ func (c *Cluster) Init(ctx context.Context, opts InitOptions) error {
 	}
 
 	c.logger.Info("")
+	c.logger.Info("Waiting for CoreDNS to be ready...")
+	if err := kubeClient.WaitForDeploymentReady(ctx, "kube-system", "coredns", 3*time.Minute); err != nil {
+		return fmt.Errorf("CoreDNS not ready: %w", err)
+	}
+	c.logger.Info("✓ CoreDNS is ready")
+
+	c.logger.Info("")
 	c.logger.Infof("✅ Cluster initialized on %s with Calico CNI", nodeName)
 
 	return nil
