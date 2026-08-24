@@ -67,6 +67,7 @@ var _ = Describe("Multi-Node Clusters", func() {
 		listCmd := helpers.BinkCmd("node", "list", "--cluster-name", clusterName)
 		listSession := helpers.RunCommand(listCmd)
 		listOutput := string(listSession.Out.Contents())
+		Expect(listOutput).To(ContainSubstring("Found 2 cluster node(s)"))
 		Expect(listOutput).To(ContainSubstring(node1), "node list should contain node1")
 		Expect(listOutput).To(ContainSubstring(node2), "node list should contain node2")
 
@@ -224,6 +225,7 @@ var _ = Describe("Multi-Node Clusters", func() {
 		listCmd := helpers.BinkCmd("node", "list", "--cluster-name", clusterName)
 		listSession := helpers.RunCommand(listCmd)
 		listOutput := string(listSession.Out.Contents())
+		Expect(listOutput).To(ContainSubstring("Found 3 cluster node(s)"))
 		Expect(listOutput).To(ContainSubstring(node1), "node list should contain node1")
 		Expect(listOutput).To(ContainSubstring(node2), "node list should contain node2")
 		Expect(listOutput).To(ContainSubstring(node3), "node list should contain node3")
