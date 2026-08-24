@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -158,6 +159,15 @@ var _ = Describe("Cluster Lifecycle", func() {
 			listOutput := string(listSession.Out.Contents())
 			Expect(listOutput).To(ContainSubstring(clusterName), "cluster list should contain the cluster name")
 			Expect(listOutput).To(ContainSubstring("1 node(s)"), "cluster list should show 1 node")
+
+			By("Verifying node list shows only the cluster node")
+			nodeListCmd := helpers.BinkCmd("node", "list", "--cluster-name", clusterName, "--all")
+			nodeListSession := helpers.RunCommand(nodeListCmd)
+			nodeListOutput := strings.TrimSpace(string(nodeListSession.Out.Contents()))
+			nodeListOutput = regexp.MustCompile(`created: [^)]*\)`).ReplaceAllString(nodeListOutput, "created:")
+			Expect(nodeListOutput).To(Equal(fmt.Sprintf(
+				"Found 1 cluster node(s):\n\n  ✓ %s (role: control-plane, status: running, created:",
+				customNodeName)))
 
 			By("Stopping the cluster")
 			stopCmd := helpers.BinkCmd("cluster", "stop", "--cluster-name", clusterName)
