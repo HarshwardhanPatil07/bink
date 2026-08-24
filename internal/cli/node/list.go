@@ -68,6 +68,10 @@ func runList(ctx context.Context, logger *logrus.Logger, showAll bool) error {
 
 		state = strings.TrimSpace(state)
 
+		if !showAll && state != "running" {
+			continue
+		}
+
 		created, err := podmanClient.ContainerInspect(ctx, containerName, "{{.Created}}")
 		if err == nil {
 			created = strings.TrimSpace(created)
