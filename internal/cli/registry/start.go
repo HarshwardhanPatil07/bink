@@ -6,12 +6,15 @@ package registry
 import (
 	"fmt"
 
+	"github.com/bootc-dev/bink/internal/config"
 	registrypkg "github.com/bootc-dev/bink/internal/registry"
 	"github.com/spf13/cobra"
 )
 
 func newStartCmd() *cobra.Command {
 	var authOnly bool
+	var registryUser string
+	var registryPassword string
 
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -29,7 +32,7 @@ func newStartCmd() *cobra.Command {
 				}
 			}
 
-			if err := mgr.EnsureAuthRegistry(cmd.Context()); err != nil {
+			if err := mgr.EnsureAuthRegistry(cmd.Context(), registryUser, registryPassword); err != nil {
 				return fmt.Errorf("starting auth registry: %w", err)
 			}
 
@@ -38,6 +41,8 @@ func newStartCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&authOnly, "auth", false, "Start only the authenticated registry")
+	cmd.Flags().StringVar(&registryUser, "registry-user", config.AuthRegistryUsername, "Username for the authenticated registry")
+	cmd.Flags().StringVar(&registryPassword, "registry-password", config.AuthRegistryPassword, "Password for the authenticated registry")
 
 	return cmd
 }

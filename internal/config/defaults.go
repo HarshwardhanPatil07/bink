@@ -61,6 +61,9 @@ const (
 	LabelKubeadmVersion = "bink.kubeadm-version"
 	LabelNodeImage      = "bink.node-image"
 
+	LabelAuthRegistryUser     = "bink.auth-registry-user"
+	LabelAuthRegistryPassword = "bink.auth-registry-password"
+
 	ContainerNamePrefix = "k8s-"
 
 	DNSContainerName = "dns"

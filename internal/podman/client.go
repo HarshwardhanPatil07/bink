@@ -604,6 +604,19 @@ func (c *Client) ContainerInspect(ctx context.Context, name, format string) (str
 	}
 }
 
+func (c *Client) ContainerLabels(ctx context.Context, name string) (map[string]string, error) {
+	if err := c.ensureConnection(); err != nil {
+		return nil, err
+	}
+
+	data, err := containers.Inspect(c.withCtx(ctx), name, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return data.Config.Labels, nil
+}
+
 func (c *Client) ContainerCopy(ctx context.Context, srcPath, containerName, destPath string) error {
 	if err := c.ensureConnection(); err != nil {
 		return err

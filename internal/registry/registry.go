@@ -181,7 +181,7 @@ func (m *Manager) RegistryInfo(ctx context.Context) (*RegistryStatus, error) {
 	return info, nil
 }
 
-func (m *Manager) EnsureAuthRegistry(ctx context.Context) error {
+func (m *Manager) EnsureAuthRegistry(ctx context.Context, username, password string) error {
 	logrus.Info("Ensuring authenticated registry is running")
 
 	if err := m.podman.EnsureImage(ctx, config.RegistryImage); err != nil {
@@ -216,7 +216,7 @@ func (m *Manager) EnsureAuthRegistry(ctx context.Context) error {
 		}
 	}
 
-	if err := m.createAuthContainer(ctx); err != nil {
+	if err := m.createAuthContainer(ctx, username, password); err != nil {
 		return err
 	}
 
@@ -225,8 +225,8 @@ func (m *Manager) EnsureAuthRegistry(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) createAuthContainer(ctx context.Context) error {
-	htpasswdEntry, err := generateHtpasswd(config.AuthRegistryUsername, config.AuthRegistryPassword)
+func (m *Manager) createAuthContainer(ctx context.Context, username, password string) error {
+	htpasswdEntry, err := generateHtpasswd(username, password)
 	if err != nil {
 		return fmt.Errorf("generating htpasswd: %w", err)
 	}
@@ -264,7 +264,9 @@ func (m *Manager) createAuthContainer(ctx context.Context) error {
 			"REGISTRY_HTTP_SECRET":         config.RegistryHTTPSecret,
 		},
 		Labels: map[string]string{
-			config.LabelComponent: "auth-registry",
+			config.LabelComponent:            "auth-registry",
+			config.LabelAuthRegistryUser:     username,
+			config.LabelAuthRegistryPassword: password,
 		},
 	}
 
@@ -331,6 +333,17 @@ func (m *Manager) AuthRegistryInfo(ctx context.Context) (*AuthRegistryStatus, er
 
 	if !exists {
 		return info, nil
+	}
+
+	labels, err := m.podman.ContainerLabels(ctx, config.AuthRegistryContainerName)
+	if err != nil {
+		return info, fmt.Errorf("getting auth registry labels: %w", err)
+	}
+	if u, ok := labels[config.LabelAuthRegistryUser]; ok {
+		info.Username = u
+	}
+	if p, ok := labels[config.LabelAuthRegistryPassword]; ok {
+		info.Password = p
 	}
 
 	status, err := m.podman.ContainerStatus(ctx, config.AuthRegistryContainerName)
