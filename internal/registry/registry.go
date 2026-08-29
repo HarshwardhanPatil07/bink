@@ -5,8 +5,10 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
 
 	"github.com/bootc-dev/bink/internal/config"
@@ -14,9 +16,12 @@ import (
 	"github.com/sirupsen/logrus"
 	nettypes "go.podman.io/common/libnetwork/types"
 	"go.podman.io/podman/v6/libpod/define"
+	"go.podman.io/podman/v6/pkg/errorhandling"
 	"go.podman.io/podman/v6/pkg/specgen"
 	"golang.org/x/crypto/bcrypt"
 )
+
+const authHtpasswdEnv = "BINK_AUTH_HTPASSWD"
 
 type Manager struct {
 	podman *podman.Client
@@ -47,25 +52,18 @@ func (m *Manager) EnsureRegistry(ctx context.Context) error {
 	}
 
 	if exists {
-		status, err := m.podman.ContainerStatus(ctx, config.RegistryContainerName)
-		if err != nil {
-			return fmt.Errorf("checking registry status: %w", err)
-		}
-		switch status {
-		case define.ContainerStateRunning.String():
-			logrus.Info("Registry already running")
-			return nil
-		default:
-			logrus.Infof("Registry container is %s, starting it", status)
-			if err := m.podman.ContainerStart(ctx, config.RegistryContainerName); err != nil {
-				return fmt.Errorf("starting registry: %w", err)
-			}
-			logrus.Info("Registry started")
-			return nil
-		}
+		return m.ensureExistingRegistry(ctx)
 	}
 
 	if err := m.createContainer(ctx); err != nil {
+		exists, checkErr := m.podman.ContainerExists(ctx, config.RegistryContainerName)
+		if checkErr != nil {
+			return errors.Join(err, fmt.Errorf("checking registry after create failure: %w", checkErr))
+		}
+		if exists {
+			logrus.Info("Registry container was created concurrently")
+			return m.ensureExistingRegistry(ctx)
+		}
 		return err
 	}
 
@@ -107,12 +105,26 @@ func (m *Manager) createContainer(ctx context.Context) error {
 
 	_, err := m.podman.ContainerCreate(ctx, opts)
 	if err != nil {
-		if isContainerAlreadyExists(err) {
-			logrus.Info("Registry container was created concurrently")
-			return nil
-		}
 		return fmt.Errorf("creating registry container: %w", err)
 	}
+	return nil
+}
+
+func (m *Manager) ensureExistingRegistry(ctx context.Context) error {
+	status, err := m.podman.ContainerStatus(ctx, config.RegistryContainerName)
+	if err != nil {
+		return fmt.Errorf("checking registry status: %w", err)
+	}
+	if status == define.ContainerStateRunning.String() {
+		logrus.Info("Registry already running")
+		return nil
+	}
+
+	logrus.Infof("Registry container is %s, starting it", status)
+	if err := m.podman.ContainerStart(ctx, config.RegistryContainerName); err != nil {
+		return fmt.Errorf("starting registry: %w", err)
+	}
+	logrus.Info("Registry started")
 	return nil
 }
 
@@ -122,25 +134,29 @@ func (m *Manager) StopRegistry(ctx context.Context) error {
 		return fmt.Errorf("checking registry container: %w", err)
 	}
 
-	if !exists {
-		logrus.Info("Registry container not found")
-		return nil
-	}
+	if exists {
+		logrus.Info("Stopping registry container")
+		if err := m.podman.ContainerStop(ctx, config.RegistryContainerName); err != nil && !isPodmanNotFound(err) {
+			logrus.Warnf("Failed to stop registry: %v", err)
+		}
 
-	logrus.Info("Stopping registry container")
-	if err := m.podman.ContainerStop(ctx, config.RegistryContainerName); err != nil {
-		logrus.Warnf("Failed to stop registry: %v", err)
-	}
-
-	if err := m.podman.ContainerRemove(ctx, config.RegistryContainerName, true); err != nil {
-		if !isContainerGone(err) {
+		if err := m.podman.ContainerRemove(ctx, config.RegistryContainerName, true); err != nil && !isPodmanNotFound(err) {
 			return fmt.Errorf("removing registry container: %w", err)
 		}
-		logrus.Debug("Registry container already removed")
+	} else {
+		logrus.Info("Registry container not found")
 	}
 
-	if err := m.podman.VolumeRemove(ctx, config.RegistryVolume); err != nil {
-		logrus.Warnf("Failed to remove registry volume: %v", err)
+	volumeExists, err := m.podman.VolumeExists(ctx, config.RegistryVolume)
+	if err != nil {
+		return fmt.Errorf("checking registry volume: %w", err)
+	}
+	if volumeExists {
+		if err := m.podman.VolumeRemove(ctx, config.RegistryVolume); err != nil && !isPodmanNotFound(err) {
+			return fmt.Errorf("removing registry volume: %w", err)
+		}
+	} else {
+		logrus.Info("Registry volume not found")
 	}
 
 	logrus.Info("Registry stopped and removed")
@@ -183,6 +199,9 @@ func (m *Manager) RegistryInfo(ctx context.Context) (*RegistryStatus, error) {
 
 func (m *Manager) EnsureAuthRegistry(ctx context.Context, username, password string) error {
 	logrus.Info("Ensuring authenticated registry is running")
+	if err := ValidateAuthCredentials(username, password); err != nil {
+		return err
+	}
 
 	if err := m.podman.EnsureImage(ctx, config.RegistryImage); err != nil {
 		return fmt.Errorf("ensuring registry image: %w", err)
@@ -198,25 +217,18 @@ func (m *Manager) EnsureAuthRegistry(ctx context.Context, username, password str
 	}
 
 	if exists {
-		status, err := m.podman.ContainerStatus(ctx, config.AuthRegistryContainerName)
-		if err != nil {
-			return fmt.Errorf("checking auth registry status: %w", err)
-		}
-		switch status {
-		case define.ContainerStateRunning.String():
-			logrus.Info("Authenticated registry already running")
-			return nil
-		default:
-			logrus.Infof("Auth registry container is %s, starting it", status)
-			if err := m.podman.ContainerStart(ctx, config.AuthRegistryContainerName); err != nil {
-				return fmt.Errorf("starting auth registry: %w", err)
-			}
-			logrus.Info("Authenticated registry started")
-			return nil
-		}
+		return m.ensureExistingAuthRegistry(ctx, username, password)
 	}
 
 	if err := m.createAuthContainer(ctx, username, password); err != nil {
+		exists, checkErr := m.podman.ContainerExists(ctx, config.AuthRegistryContainerName)
+		if checkErr != nil {
+			return errors.Join(err, fmt.Errorf("checking auth registry after create failure: %w", checkErr))
+		}
+		if exists {
+			logrus.Info("Auth registry container was created concurrently")
+			return m.ensureExistingAuthRegistry(ctx, username, password)
+		}
 		return err
 	}
 
@@ -226,7 +238,7 @@ func (m *Manager) EnsureAuthRegistry(ctx context.Context, username, password str
 }
 
 func (m *Manager) createAuthContainer(ctx context.Context, username, password string) error {
-	htpasswdEntry, err := generateHtpasswd(username, password)
+	htpasswdEntry, passwordHash, err := generateHtpasswd(username, password)
 	if err != nil {
 		return fmt.Errorf("generating htpasswd: %w", err)
 	}
@@ -235,7 +247,7 @@ func (m *Manager) createAuthContainer(ctx context.Context, username, password st
 		Name:  config.AuthRegistryContainerName,
 		Image: config.RegistryImage,
 		Entrypoint: []string{"/bin/sh", "-c",
-			fmt.Sprintf("mkdir -p /auth && printf '%s\\n' > /auth/htpasswd && /entrypoint.sh /etc/docker/registry/config.yml", htpasswdEntry),
+			`mkdir -p /auth && printf '%s\n' "$` + authHtpasswdEnv + `" > /auth/htpasswd && exec /entrypoint.sh /etc/docker/registry/config.yml`,
 		},
 		NetworkOptions: map[string]nettypes.PerNetworkOptions{
 			config.DefaultNetworkName: {
@@ -257,6 +269,7 @@ func (m *Manager) createAuthContainer(ctx context.Context, username, password st
 			},
 		},
 		Environment: map[string]string{
+			authHtpasswdEnv:                htpasswdEntry,
 			"REGISTRY_HTTP_ADDR":           fmt.Sprintf("0.0.0.0:%d", config.AuthRegistryPort),
 			"REGISTRY_AUTH":                "htpasswd",
 			"REGISTRY_AUTH_HTPASSWD_REALM": "Registry Realm",
@@ -264,18 +277,14 @@ func (m *Manager) createAuthContainer(ctx context.Context, username, password st
 			"REGISTRY_HTTP_SECRET":         config.RegistryHTTPSecret,
 		},
 		Labels: map[string]string{
-			config.LabelComponent:            "auth-registry",
-			config.LabelAuthRegistryUser:     username,
-			config.LabelAuthRegistryPassword: password,
+			config.LabelComponent:                "auth-registry",
+			config.LabelAuthRegistryUser:         username,
+			config.LabelAuthRegistryPasswordHash: passwordHash,
 		},
 	}
 
 	_, err = m.podman.ContainerCreate(ctx, opts)
 	if err != nil {
-		if isContainerAlreadyExists(err) {
-			logrus.Info("Auth registry container was created concurrently")
-			return nil
-		}
 		return fmt.Errorf("creating auth registry container: %w", err)
 	}
 	return nil
@@ -293,15 +302,12 @@ func (m *Manager) StopAuthRegistry(ctx context.Context) error {
 	}
 
 	logrus.Info("Stopping auth registry container")
-	if err := m.podman.ContainerStop(ctx, config.AuthRegistryContainerName); err != nil {
+	if err := m.podman.ContainerStop(ctx, config.AuthRegistryContainerName); err != nil && !isPodmanNotFound(err) {
 		logrus.Warnf("Failed to stop auth registry: %v", err)
 	}
 
-	if err := m.podman.ContainerRemove(ctx, config.AuthRegistryContainerName, true); err != nil {
-		if !isContainerGone(err) {
-			return fmt.Errorf("removing auth registry container: %w", err)
-		}
-		logrus.Debug("Auth registry container already removed")
+	if err := m.podman.ContainerRemove(ctx, config.AuthRegistryContainerName, true); err != nil && !isPodmanNotFound(err) {
+		return fmt.Errorf("removing auth registry container: %w", err)
 	}
 
 	logrus.Info("Auth registry stopped and removed")
@@ -314,7 +320,6 @@ type AuthRegistryStatus struct {
 	HostPort int
 	PullURL  string
 	Username string
-	Password string
 }
 
 func (m *Manager) AuthRegistryInfo(ctx context.Context) (*AuthRegistryStatus, error) {
@@ -322,8 +327,6 @@ func (m *Manager) AuthRegistryInfo(ctx context.Context) (*AuthRegistryStatus, er
 		IP:       config.AuthRegistryStaticIP,
 		HostPort: config.AuthRegistryPort,
 		PullURL:  fmt.Sprintf("%s.%s:%d", config.AuthRegistryHostname, config.ClusterDomain, config.AuthRegistryPort),
-		Username: config.AuthRegistryUsername,
-		Password: config.AuthRegistryPassword,
 	}
 
 	exists, err := m.podman.ContainerExists(ctx, config.AuthRegistryContainerName)
@@ -342,9 +345,6 @@ func (m *Manager) AuthRegistryInfo(ctx context.Context) (*AuthRegistryStatus, er
 	if u, ok := labels[config.LabelAuthRegistryUser]; ok {
 		info.Username = u
 	}
-	if p, ok := labels[config.LabelAuthRegistryPassword]; ok {
-		info.Password = p
-	}
 
 	status, err := m.podman.ContainerStatus(ctx, config.AuthRegistryContainerName)
 	if err != nil {
@@ -355,20 +355,90 @@ func (m *Manager) AuthRegistryInfo(ctx context.Context) (*AuthRegistryStatus, er
 	return info, nil
 }
 
-func isContainerGone(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, define.ErrNoSuchCtr.Error()) || strings.Contains(msg, "not found")
+func isPodmanNotFound(err error) bool {
+	var podmanErr *errorhandling.ErrorModel
+	return errors.As(err, &podmanErr) && podmanErr.ResponseCode == http.StatusNotFound
 }
 
-func isContainerAlreadyExists(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, define.ErrCtrExists.Error()) || strings.Contains(msg, "already in use")
+func (m *Manager) ensureExistingAuthRegistry(ctx context.Context, username, password string) error {
+	labels, err := m.podman.ContainerLabels(ctx, config.AuthRegistryContainerName)
+	if err != nil {
+		return fmt.Errorf("reading auth registry configuration: %w", err)
+	}
+
+	matches, err := authCredentialsMatch(labels, username, password)
+	if err != nil {
+		return fmt.Errorf("checking auth registry credentials: %w", err)
+	}
+	if !matches {
+		return fmt.Errorf("authenticated registry already exists with different credentials; run 'bink registry stop --auth' before changing them")
+	}
+
+	status, err := m.podman.ContainerStatus(ctx, config.AuthRegistryContainerName)
+	if err != nil {
+		return fmt.Errorf("checking auth registry status: %w", err)
+	}
+	if status == define.ContainerStateRunning.String() {
+		logrus.Info("Authenticated registry already running")
+		return nil
+	}
+
+	logrus.Infof("Auth registry container is %s, starting it", status)
+	if err := m.podman.ContainerStart(ctx, config.AuthRegistryContainerName); err != nil {
+		return fmt.Errorf("starting auth registry: %w", err)
+	}
+	logrus.Info("Authenticated registry started")
+	return nil
 }
 
-func generateHtpasswd(username, password string) (string, error) {
+// ValidateAuthCredentials checks that credentials can be represented safely in an htpasswd file.
+func ValidateAuthCredentials(username, password string) error {
+	if username == "" {
+		return fmt.Errorf("registry username must not be empty")
+	}
+	if strings.ContainsAny(username, ":\r\n") {
+		return fmt.Errorf("registry username must not contain ':', carriage returns, or newlines")
+	}
+	if password == "" {
+		return fmt.Errorf("registry password must not be empty")
+	}
+	return nil
+}
+
+// AuthRegistryRequested reports whether credentials request an authenticated registry.
+// Supplying only one credential is rejected rather than silently disabling authentication.
+func AuthRegistryRequested(username, password string) (bool, error) {
+	if username == "" && password == "" {
+		return false, nil
+	}
+	if err := ValidateAuthCredentials(username, password); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func authCredentialsMatch(labels map[string]string, username, password string) (bool, error) {
+	if labels[config.LabelAuthRegistryUser] != username {
+		return false, nil
+	}
+
+	passwordHash, ok := labels[config.LabelAuthRegistryPasswordHash]
+	if !ok {
+		return false, nil
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
+		if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+			return false, nil
+		}
+		return false, fmt.Errorf("verifying stored password hash: %w", err)
+	}
+	return true, nil
+}
+
+func generateHtpasswd(username, password string) (string, string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		return "", fmt.Errorf("hashing password: %w", err)
+		return "", "", fmt.Errorf("hashing password: %w", err)
 	}
-	return fmt.Sprintf("%s:%s", username, string(hash)), nil
+	return fmt.Sprintf("%s:%s", username, string(hash)), string(hash), nil
 }

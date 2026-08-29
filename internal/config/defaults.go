@@ -61,8 +61,8 @@ const (
 	LabelKubeadmVersion = "bink.kubeadm-version"
 	LabelNodeImage      = "bink.node-image"
 
-	LabelAuthRegistryUser     = "bink.auth-registry-user"
-	LabelAuthRegistryPassword = "bink.auth-registry-password"
+	LabelAuthRegistryUser         = "bink.auth-registry-user"
+	LabelAuthRegistryPasswordHash = "bink.auth-registry-password-hash"
 
 	ContainerNamePrefix = "k8s-"
 
@@ -85,8 +85,6 @@ const (
 	AuthRegistryPort          = 5001
 	AuthRegistryStaticIP      = "10.88.0.3"
 	AuthRegistryHostname      = "auth-registry"
-	AuthRegistryUsername      = "testuser"
-	AuthRegistryPassword      = "testpassword"
 
 	HAProxyImage         = "docker.io/library/haproxy:lts-alpine"
 	HAProxyContainerName = "haproxy"
