@@ -4,6 +4,7 @@
 package registry
 
 import (
+	"errors"
 	"fmt"
 
 	registrypkg "github.com/bootc-dev/bink/internal/registry"
@@ -24,20 +25,18 @@ func newStopCmd() *cobra.Command {
 				return fmt.Errorf("creating registry manager: %w", err)
 			}
 
-			if err := mgr.StopAuthRegistry(cmd.Context()); err != nil {
-				if authOnly {
-					return fmt.Errorf("stopping auth registry: %w", err)
-				}
-				logrus.Warnf("Failed to stop auth registry: %v", err)
-			}
-
+			authErr := mgr.StopAuthRegistry(cmd.Context())
 			if authOnly {
+				if authErr != nil {
+					return fmt.Errorf("stopping auth registry: %w", authErr)
+				}
 				logrus.Info("Auth registry stopped and removed")
 				return nil
 			}
 
-			if err := mgr.StopRegistry(cmd.Context()); err != nil {
-				return fmt.Errorf("stopping registry: %w", err)
+			registryErr := mgr.StopRegistry(cmd.Context())
+			if err := errors.Join(authErr, registryErr); err != nil {
+				return fmt.Errorf("stopping registries: %w", err)
 			}
 
 			logrus.Info("All registries stopped and data removed")

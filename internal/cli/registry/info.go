@@ -52,7 +52,9 @@ func newInfoCmd() *cobra.Command {
 			fmt.Printf("  IP:          %s\n", authInfo.IP)
 			fmt.Printf("  Host port:   %d\n", authInfo.HostPort)
 			fmt.Printf("  Pull:        %s/<image>:<tag>\n", authInfo.PullURL)
-			fmt.Printf("  Credentials: %s / %s\n", authInfo.Username, authInfo.Password)
+			if authInfo.Username != "" {
+				fmt.Printf("  Username:    %s\n", authInfo.Username)
+			}
 
 			return nil
 		},
