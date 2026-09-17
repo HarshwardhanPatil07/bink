@@ -143,17 +143,24 @@ jobs:
         run: sudo podman login -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }} ghcr.io
 
       - name: Push bootc image to GHCR (staging)
+        id: push-bootc-staging
         if: github.event_name == 'push' || inputs.push-node-images == true
         working-directory: node-images/fedora
         run: |
           BOOTC_SRC=$(make -s print-bootc-image KUBE_MINOR=${{ matrix.kube-minor }})
           PUSH_DEST=${{ env.PUSH_REGISTRY }}/${{ env.PUSH_IMAGE }}
           sudo podman tag ${BOOTC_SRC} ${PUSH_DEST}:${{ steps.meta.outputs.staging-tag }}
-          sudo podman push ${PUSH_DEST}:${{ steps.meta.outputs.staging-tag }}
+          sudo podman push --digestfile=/tmp/bootc-digest ${PUSH_DEST}:${{ steps.meta.outputs.staging-tag }}
+          BOOTC_DIGEST=$(cat /tmp/bootc-digest)
+          echo "digest=${BOOTC_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Bootc registry digest: ${BOOTC_DIGEST}"
 
       - name: Build disk image
         working-directory: node-images/fedora
-        run: sudo make build-disk-image KUBE_MINOR=${{ matrix.kube-minor }}
+        run: |
+          sudo make build-disk-image \
+            KUBE_MINOR=${{ matrix.kube-minor }} \
+            BOOTC_DIGEST=${{ steps.push-bootc-staging.outputs.digest }}
 
       - name: Save disk image
         working-directory: node-images/fedora
@@ -169,7 +176,10 @@ jobs:
 
       - name: Build composefs disk image
         working-directory: node-images/fedora
-        run: sudo make build-disk-image-composefs KUBE_MINOR=${{ matrix.kube-minor }}
+        run: |
+          sudo make build-disk-image-composefs \
+            KUBE_MINOR=${{ matrix.kube-minor }} \
+            BOOTC_DIGEST=${{ steps.push-bootc-staging.outputs.digest }}
 
       - name: Save composefs disk image
         working-directory: node-images/fedora
@@ -410,10 +420,35 @@ jobs:
           STAGING_TAG=${{ steps.meta.outputs.staging-tag }}
           PUSH_DEST=${{ env.PUSH_REGISTRY }}/${{ env.PUSH_IMAGE }}
 
-          sudo skopeo copy docker://${PUSH_DEST}:${STAGING_TAG} docker://${PUSH_DEST}:${TAG}
+          sudo skopeo copy --preserve-digests docker://${PUSH_DEST}:${STAGING_TAG} docker://${PUSH_DEST}:${TAG}
           if [ "${{ matrix.kube-minor }}" = "${{ needs.supported-versions.outputs.default-version }}" ]; then
-            sudo skopeo copy docker://${PUSH_DEST}:${STAGING_TAG} docker://${PUSH_DEST}:latest
+            sudo skopeo copy --preserve-digests docker://${PUSH_DEST}:${STAGING_TAG} docker://${PUSH_DEST}:latest
           fi
+
+      - name: Verify bootc image reference
+        working-directory: node-images/fedora
+        run: |
+          TAG=${{ steps.meta.outputs.tag }}
+          PUSH_DEST=${{ env.PUSH_REGISTRY }}/${{ env.PUSH_IMAGE }}
+          DISK_SRC=$(make -s print-node-image KUBE_MINOR=${{ matrix.kube-minor }})
+          COMPOSEFS_SRC=$(make -s print-node-image-composefs KUBE_MINOR=${{ matrix.kube-minor }})
+          BOOTC_DIGEST=$(sudo podman inspect --format '{{ index .Config.Labels "bink.bootc-image-digest" }}' ${DISK_SRC})
+          COMPOSEFS_DIGEST=$(sudo podman inspect --format '{{ index .Config.Labels "bink.bootc-image-digest" }}' ${COMPOSEFS_SRC})
+          PUBLISHED_DIGEST=$(sudo skopeo inspect docker://${PUSH_DEST}:${TAG} --format '{{.Digest}}')
+
+          if [ -z "${BOOTC_DIGEST}" ]; then
+            echo "Disk image has no bink.bootc-image-digest label" >&2
+            exit 1
+          fi
+          if [ "${BOOTC_DIGEST}" != "${COMPOSEFS_DIGEST}" ]; then
+            echo "Disk image digests do not match: ${BOOTC_DIGEST} != ${COMPOSEFS_DIGEST}" >&2
+            exit 1
+          fi
+          if [ "${BOOTC_DIGEST}" != "${PUBLISHED_DIGEST}" ]; then
+            echo "Disk image references ${BOOTC_DIGEST}, but ${PUSH_DEST}:${TAG} is ${PUBLISHED_DIGEST}" >&2
+            exit 1
+          fi
+          sudo skopeo inspect docker://${PUSH_DEST}@${BOOTC_DIGEST} > /dev/null
 
       - name: Push disk image
         working-directory: node-images/fedora
