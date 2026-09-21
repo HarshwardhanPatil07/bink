@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bootc-dev/bink/internal/config"
 	"github.com/bootc-dev/bink/internal/podman"
@@ -120,6 +121,10 @@ func (m *Manager) ensureExistingContainer(ctx context.Context, name, label strin
 
 	logrus.Infof("%s container is %s, starting it", label, status)
 	if err := m.podman.ContainerStart(ctx, name); err != nil {
+		if s, e := m.podman.ContainerStatus(ctx, name); e == nil && s == define.ContainerStateRunning.String() {
+			logrus.Infof("%s already running", label)
+			return nil
+		}
 		return fmt.Errorf("starting %s: %w", strings.ToLower(label), err)
 	}
 	logrus.Infof("%s started", label)
@@ -349,18 +354,28 @@ func isPodmanNotFound(err error) bool {
 // recoverFromConcurrentCreate handles parallel EnsureRegistry/EnsureAuthRegistry calls
 // where two processes both attempt to create the same named container.
 func (m *Manager) recoverFromConcurrentCreate(ctx context.Context, name string, createErr error, ensure func(context.Context) error) error {
+	var isConcurrent bool
 	if isContainerAlreadyExists(createErr) {
-		logrus.Infof("%s was created concurrently", name)
-		return ensure(ctx)
+		isConcurrent = true
+	} else {
+		exists, checkErr := m.podman.ContainerExists(ctx, name)
+		if checkErr != nil {
+			return errors.Join(createErr, fmt.Errorf("checking %s after create failure: %w", name, checkErr))
+		}
+		isConcurrent = exists
 	}
 
-	exists, checkErr := m.podman.ContainerExists(ctx, name)
-	if checkErr != nil {
-		return errors.Join(createErr, fmt.Errorf("checking %s after create failure: %w", name, checkErr))
-	}
-	if exists {
+	if isConcurrent {
 		logrus.Infof("%s was created concurrently", name)
-		return ensure(ctx)
+		var err error
+		for attempts := 0; attempts < 3; attempts++ {
+			err = ensure(ctx)
+			if err == nil {
+				return nil
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		return err
 	}
 	return createErr
 }
