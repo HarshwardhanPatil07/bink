@@ -37,7 +37,11 @@ COPY --from=builder /target-rootfs/ /
 
 RUN passwd -d root
 RUN sed -i 's|"/opt/cni/bin"|"/var/lib/cni/bin"|g' /etc/crio/crio.conf && \
-    sed -i 's|"/opt/cni/net.d"|"/etc/cni/net.d"|g' /etc/crio/crio.conf
+    sed -i 's|"/opt/cni/net.d"|"/etc/cni/net.d"|g' /etc/crio/crio.conf && \
+    if [ -x /usr/libexec/crio/pinns ]; then \
+        mkdir -p /etc/crio/crio.conf.d && \
+        printf '[crio.runtime]\npinns_path = "/usr/libexec/crio/pinns"\n' > /etc/crio/crio.conf.d/04-pinns.conf; \
+    fi
 RUN bootc container lint
 
 LABEL containers.bootc 1
